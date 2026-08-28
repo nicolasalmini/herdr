@@ -38,13 +38,12 @@ fn tab_number_marker_width(tab_idx: usize) -> u16 {
 }
 
 fn numbered_tab_fixed_chrome_width(ws: &crate::workspace::Workspace, tab_idx: usize) -> u16 {
-    tab_number_marker_width(tab_idx).saturating_add(
-        ws.tabs
-            .get(tab_idx)
-            .is_some_and(|tab| tab.zoomed)
-            .then_some(display_width_u16(" Z"))
-            .unwrap_or_default(),
-    )
+    let zoom_indicator_width = if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
+        display_width_u16(" Z")
+    } else {
+        0
+    };
+    tab_number_marker_width(tab_idx).saturating_add(zoom_indicator_width)
 }
 
 fn tab_width(ws: &crate::workspace::Workspace, tab_idx: usize, show_tab_numbers: bool) -> u16 {
