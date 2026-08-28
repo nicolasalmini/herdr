@@ -889,7 +889,7 @@ pub struct UiConfig {
     pub show_agent_labels_on_pane_borders: bool,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
-    /// Show one-based current-order numbers before desktop tab labels. Default: false.
+    /// Show auto-named tabs by their one-based current-order number and prefix custom labels with it. Default: false.
     pub show_tab_numbers: bool,
     /// Desktop tab row placement. Default: top.
     pub tab_bar_position: TabBarPositionConfig,
