@@ -670,6 +670,7 @@ impl App {
             pane_gaps: config.ui.pane_gaps,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
+            show_tab_numbers: config.ui.show_tab_numbers,
             tab_bar_position: config.ui.tab_bar_position,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: String::new(),
@@ -1517,6 +1518,7 @@ impl App {
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;
+                self.state.show_tab_numbers = config.ui.show_tab_numbers;
                 self.state.tab_bar_position = config.ui.tab_bar_position;
                 self.configure_tab_bar_status(
                     &config.ui.tab_bar_right,
