@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use super::text::display_width_u16;
+use super::text::{display_width_u16, truncate_end};
 use super::widgets::panel_contrast_fg;
 use crate::app::AppState;
 
@@ -27,20 +27,73 @@ pub(crate) struct TabBarView {
     pub new_tab_hit_area: Rect,
 }
 
-fn tab_width(ws: &crate::workspace::Workspace, tab_idx: usize) -> u16 {
-    display_width_u16(&tab_chrome_label(ws, tab_idx))
+fn tab_number_marker_width(tab_idx: usize) -> u16 {
+    let mut number = tab_idx.saturating_add(1);
+    let mut width = 1_u16;
+    while number >= 10 {
+        number /= 10;
+        width = width.saturating_add(1);
+    }
+    width.saturating_add(1)
+}
+
+fn numbered_tab_fixed_chrome_width(ws: &crate::workspace::Workspace, tab_idx: usize) -> u16 {
+    let zoom_indicator_width = if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
+        display_width_u16(" Z")
+    } else {
+        0
+    };
+    tab_number_marker_width(tab_idx).saturating_add(zoom_indicator_width)
+}
+
+fn tab_width(ws: &crate::workspace::Workspace, tab_idx: usize, show_tab_numbers: bool) -> u16 {
+    display_width_u16(&tab_chrome_label(ws, tab_idx, show_tab_numbers))
         .saturating_add(4)
         .max(MIN_TAB_WIDTH)
 }
 
-fn tab_chrome_label(ws: &crate::workspace::Workspace, tab_idx: usize) -> String {
+fn tab_chrome_label(
+    ws: &crate::workspace::Workspace,
+    tab_idx: usize,
+    show_tab_numbers: bool,
+) -> String {
     let name = ws
         .tab_display_name(tab_idx)
         .unwrap_or_else(|| (tab_idx + 1).to_string());
+    let name = if show_tab_numbers {
+        format!("{}: {name}", tab_idx + 1)
+    } else {
+        name
+    };
     if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
         format!("{name} Z")
     } else {
         name
+    }
+}
+
+fn fitted_numbered_tab_chrome_label(
+    ws: &crate::workspace::Workspace,
+    tab_idx: usize,
+    max_width: u16,
+) -> String {
+    let marker = format!("{}:", tab_idx + 1);
+    let zoom_suffix = if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
+        " Z"
+    } else {
+        ""
+    };
+    let label_budget = max_width
+        .saturating_sub(numbered_tab_fixed_chrome_width(ws, tab_idx))
+        .saturating_sub(1);
+    let label = ws
+        .tab_display_name(tab_idx)
+        .unwrap_or_else(|| (tab_idx + 1).to_string());
+    let label = truncate_end(&label, usize::from(label_budget));
+    if label.is_empty() {
+        format!("{marker}{zoom_suffix}")
+    } else {
+        format!("{marker} {label}{zoom_suffix}")
     }
 }
 
@@ -108,7 +161,12 @@ pub(crate) fn tab_bar_content_area(app: &AppState, area: Rect) -> Rect {
     }
 }
 
-fn layout_tab_hit_areas(ws: &crate::workspace::Workspace, area: Rect, scroll: usize) -> Vec<Rect> {
+fn layout_tab_hit_areas(
+    ws: &crate::workspace::Workspace,
+    area: Rect,
+    scroll: usize,
+    show_tab_numbers: bool,
+) -> Vec<Rect> {
     let mut rects = vec![Rect::default(); ws.tabs.len()];
     if area.width == 0 || area.height == 0 {
         return rects;
@@ -120,8 +178,14 @@ fn layout_tab_hit_areas(ws: &crate::workspace::Workspace, area: Rect, scroll: us
         if x >= right {
             break;
         }
-        let desired = tab_width(ws, idx);
+        let desired = tab_width(ws, idx, show_tab_numbers);
         let remaining = right.saturating_sub(x);
+        if show_tab_numbers {
+            let overflow_cell = u16::from(idx + 1 < ws.tabs.len());
+            if remaining < numbered_tab_fixed_chrome_width(ws, idx).saturating_add(overflow_cell) {
+                break;
+            }
+        }
         let width = desired.min(remaining).max(1);
         *rect = Rect::new(x, area.y, width, 1);
         x = x.saturating_add(width + 1);
@@ -129,13 +193,17 @@ fn layout_tab_hit_areas(ws: &crate::workspace::Workspace, area: Rect, scroll: us
     rects
 }
 
-fn centered_tab_scroll(ws: &crate::workspace::Workspace, area: Rect) -> usize {
+fn centered_tab_scroll(
+    ws: &crate::workspace::Workspace,
+    area: Rect,
+    show_tab_numbers: bool,
+) -> usize {
     let mut best_scroll = ws.active_tab;
     let mut best_distance = u16::MAX;
     let viewport_center = area.x.saturating_mul(2).saturating_add(area.width);
 
     for scroll in 0..=ws.active_tab {
-        let rects = layout_tab_hit_areas(ws, area, scroll);
+        let rects = layout_tab_hit_areas(ws, area, scroll, show_tab_numbers);
         let Some(active_rect) = rects.get(ws.active_tab).copied() else {
             continue;
         };
@@ -157,6 +225,16 @@ fn centered_tab_scroll(ws: &crate::workspace::Workspace, area: Rect) -> usize {
     best_scroll
 }
 
+fn reserve_left_overflow_cell(area: Rect) -> Rect {
+    let reserved = area.width.min(1);
+    Rect::new(
+        area.x.saturating_add(reserved),
+        area.y,
+        area.width.saturating_sub(reserved),
+        area.height,
+    )
+}
+
 fn trailing_tab_controls_x(tab_hit_areas: &[Rect], fallback_x: u16) -> u16 {
     tab_hit_areas
         .iter()
@@ -166,10 +244,10 @@ fn trailing_tab_controls_x(tab_hit_areas: &[Rect], fallback_x: u16) -> u16 {
         .unwrap_or(fallback_x)
 }
 
-fn max_tab_scroll(ws: &crate::workspace::Workspace, area: Rect) -> usize {
+fn max_tab_scroll(ws: &crate::workspace::Workspace, area: Rect, show_tab_numbers: bool) -> usize {
     (0..ws.tabs.len())
         .find(|&scroll| {
-            layout_tab_hit_areas(ws, area, scroll)
+            layout_tab_hit_areas(ws, area, scroll, show_tab_numbers)
                 .last()
                 .is_some_and(|rect| rect.width > 0)
         })
@@ -182,21 +260,34 @@ pub(crate) fn compute_tab_bar_view(
     current_scroll: usize,
     follow_active: bool,
     mouse_chrome: bool,
+    show_tab_numbers: bool,
 ) -> TabBarView {
     if area.width == 0 || area.height == 0 {
         return TabBarView::default();
     }
 
     if !mouse_chrome {
-        let max_scroll = max_tab_scroll(ws, area);
-        let scroll = if follow_active {
-            centered_tab_scroll(ws, area).min(max_scroll)
+        let max_scroll = max_tab_scroll(ws, area, show_tab_numbers);
+        let mut scroll = if follow_active {
+            centered_tab_scroll(ws, area, show_tab_numbers).min(max_scroll)
         } else {
             current_scroll.min(max_scroll)
         };
+        let layout_area = if show_tab_numbers && scroll > 0 {
+            let layout_area = reserve_left_overflow_cell(area);
+            let max_scroll = max_tab_scroll(ws, layout_area, show_tab_numbers);
+            scroll = if follow_active {
+                centered_tab_scroll(ws, layout_area, show_tab_numbers).min(max_scroll)
+            } else {
+                scroll.min(max_scroll)
+            };
+            layout_area
+        } else {
+            area
+        };
         return TabBarView {
             scroll,
-            tab_hit_areas: layout_tab_hit_areas(ws, area, scroll),
+            tab_hit_areas: layout_tab_hit_areas(ws, layout_area, scroll, show_tab_numbers),
             scroll_left_hit_area: Rect::default(),
             scroll_right_hit_area: Rect::default(),
             new_tab_hit_area: Rect::default(),
@@ -210,7 +301,7 @@ pub(crate) fn compute_tab_bar_view(
         area.width.saturating_sub(NEW_TAB_WIDTH),
         area.height,
     );
-    let all_tabs = layout_tab_hit_areas(ws, all_tabs_area, 0);
+    let all_tabs = layout_tab_hit_areas(ws, all_tabs_area, 0, show_tab_numbers);
     let overflow = all_tabs.iter().any(|rect| rect.width == 0);
     if !overflow {
         let new_tab_x = trailing_tab_controls_x(&all_tabs, area.x);
@@ -240,13 +331,25 @@ pub(crate) fn compute_tab_bar_view(
         area.height,
     );
 
-    let max_scroll = max_tab_scroll(ws, tab_area);
-    let scroll = if follow_active {
-        centered_tab_scroll(ws, tab_area).min(max_scroll)
+    let max_scroll = max_tab_scroll(ws, tab_area, show_tab_numbers);
+    let mut scroll = if follow_active {
+        centered_tab_scroll(ws, tab_area, show_tab_numbers).min(max_scroll)
     } else {
         current_scroll.min(max_scroll)
     };
-    let tab_hit_areas = layout_tab_hit_areas(ws, tab_area, scroll);
+    let tab_area = if show_tab_numbers && scroll > 0 {
+        let tab_area = reserve_left_overflow_cell(tab_area);
+        let max_scroll = max_tab_scroll(ws, tab_area, show_tab_numbers);
+        scroll = if follow_active {
+            centered_tab_scroll(ws, tab_area, show_tab_numbers).min(max_scroll)
+        } else {
+            scroll.min(max_scroll)
+        };
+        tab_area
+    } else {
+        tab_area
+    };
+    let tab_hit_areas = layout_tab_hit_areas(ws, tab_area, scroll, show_tab_numbers);
     let trailing_x = trailing_tab_controls_x(&tab_hit_areas, tab_area_x).min(tab_area_right);
     let right_hit_area = Rect::new(
         trailing_x,
@@ -406,7 +509,11 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(p.overlay1).bg(p.surface0)
         };
         let width = rect.width as usize;
-        let name = tab_chrome_label(ws, idx);
+        let name = if app.show_tab_numbers {
+            fitted_numbered_tab_chrome_label(ws, idx, rect.width)
+        } else {
+            tab_chrome_label(ws, idx, false)
+        };
         // Pad by terminal columns, not chars, so wide glyphs stay centered.
         let padding = width.saturating_sub(display_width_u16(&name) as usize);
         let left = padding / 2;
@@ -516,6 +623,227 @@ mod tests {
             .to_string()
     }
 
+    fn tab_cell_text(buffer: &ratatui::buffer::Buffer, rect: Rect) -> String {
+        (rect.x..rect.x + rect.width)
+            .map(|x| buffer[(x, rect.y)].symbol())
+            .collect()
+    }
+
+    fn render_tab_row(
+        app: &mut AppState,
+        width: u16,
+        mouse_chrome: bool,
+    ) -> ratatui::buffer::Buffer {
+        app.view.tab_bar_rect = Rect::new(0, 0, width, 1);
+        let view = compute_tab_bar_view(
+            &app.workspaces[0],
+            app.view.tab_bar_rect,
+            app.tab_scroll,
+            true,
+            mouse_chrome,
+            app.show_tab_numbers,
+        );
+        app.tab_scroll = view.scroll;
+        app.view.tab_hit_areas = view.tab_hit_areas;
+        app.view.tab_scroll_left_hit_area = view.scroll_left_hit_area;
+        app.view.tab_scroll_right_hit_area = view.scroll_right_hit_area;
+        app.view.new_tab_hit_area = view.new_tab_hit_area;
+
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_tab_bar(app, frame, app.view.tab_bar_rect))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn tab_numbers_default_off_preserves_existing_chrome_bytes() {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("shell".into());
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let buffer = render_tab_row(&mut app, 20, false);
+        let rect = app.view.tab_hit_areas[0];
+
+        assert!(!app.show_tab_numbers);
+        assert_eq!(tab_cell_text(&buffer, rect), "  shell  ");
+    }
+
+    #[test]
+    fn tab_numbers_render_current_order_through_ten_with_existing_styles() {
+        let mut app = AppState::test_new();
+        app.show_tab_numbers = true;
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("shell".into());
+        for idx in 2..=10 {
+            ws.test_add_tab(Some(&format!("tab-{idx}")));
+        }
+        ws.tabs[9].set_custom_name("编辑".into());
+        ws.switch_tab(9);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let buffer = render_tab_row(&mut app, 150, false);
+        let first = app.view.tab_hit_areas[0];
+        let tenth = app.view.tab_hit_areas[9];
+
+        assert!(tab_cell_text(&buffer, first).contains("1: shell"));
+        assert_eq!(buffer[(tenth.x + 2, tenth.y)].symbol(), "1");
+        assert_eq!(buffer[(tenth.x + 3, tenth.y)].symbol(), "0");
+        assert_eq!(buffer[(tenth.x + 4, tenth.y)].symbol(), ":");
+        assert_eq!(buffer[(tenth.x + 6, tenth.y)].symbol(), "编");
+        assert_eq!(buffer[(tenth.x + 8, tenth.y)].symbol(), "辑");
+        assert_eq!(
+            buffer[(first.x + 2, first.y)].style().bg,
+            Some(app.palette.surface0)
+        );
+        assert_eq!(
+            buffer[(tenth.x + 2, tenth.y)].style().bg,
+            Some(app.palette.accent)
+        );
+        assert_eq!(
+            app.workspaces[0].tab_display_name(9).as_deref(),
+            Some("编辑")
+        );
+        assert_eq!(
+            tab_width(&app.workspaces[0], 9, true),
+            display_width_u16("10: 编辑") + 4
+        );
+    }
+
+    #[test]
+    fn tab_numbers_follow_close_move_and_indexed_switch_without_renaming() {
+        let mut app = AppState::test_new();
+        app.show_tab_numbers = true;
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("alpha".into());
+        ws.test_add_tab(Some("beta"));
+        ws.test_add_tab(Some("gamma"));
+
+        assert!(ws.move_tab(2, 0));
+        assert!(ws.close_tab(1));
+        ws.switch_tab(1);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let buffer = render_tab_row(&mut app, 40, false);
+        let first = app.view.tab_hit_areas[0];
+        let second = app.view.tab_hit_areas[1];
+
+        assert!(tab_cell_text(&buffer, first).contains("1: gamma"));
+        assert!(tab_cell_text(&buffer, second).contains("2: beta"));
+        assert_eq!(app.workspaces[0].active_tab_index(), 1);
+        assert_eq!(
+            app.workspaces[0].tab_display_name(0).as_deref(),
+            Some("gamma")
+        );
+        assert_eq!(
+            app.workspaces[0].tab_display_name(1).as_deref(),
+            Some("beta")
+        );
+    }
+
+    #[test]
+    fn numbered_tabs_keep_prefix_visible_when_unicode_label_is_narrowed() {
+        let mut app = AppState::test_new();
+        app.show_tab_numbers = true;
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("提交 herdr 的反馈".into());
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let buffer = render_tab_row(&mut app, 7, false);
+        let rect = app.view.tab_hit_areas[0];
+
+        assert_eq!(rect.width, 7);
+        assert_eq!(buffer[(rect.x, rect.y)].symbol(), "1");
+        assert_eq!(buffer[(rect.x + 1, rect.y)].symbol(), ":");
+        assert_eq!(buffer[(rect.x + 3, rect.y)].symbol(), "提");
+        assert_eq!(buffer[(rect.x + 5, rect.y)].symbol(), "…");
+        assert_eq!(
+            app.workspaces[0].tab_display_name(0).as_deref(),
+            Some("提交 herdr 的反馈")
+        );
+
+        app.workspaces[0].test_add_tab(Some("second"));
+        let overflow_buffer = render_tab_row(&mut app, 3, false);
+        assert_eq!(overflow_buffer[(0, 0)].symbol(), "1");
+        assert_eq!(overflow_buffer[(1, 0)].symbol(), ":");
+        assert_eq!(overflow_buffer[(2, 0)].symbol(), "…");
+        assert_eq!(app.view.tab_hit_areas[1], Rect::default());
+    }
+
+    #[test]
+    fn numbered_zoomed_tab_truncates_only_unicode_label() {
+        let mut app = AppState::test_new();
+        app.show_tab_numbers = true;
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("提交 herdr 的反馈".into());
+        ws.tabs[0].zoomed = true;
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let buffer = render_tab_row(&mut app, 14, false);
+        let rect = app.view.tab_hit_areas[0];
+
+        assert_eq!(rect.width, 14);
+        assert_eq!(buffer[(rect.x, rect.y)].symbol(), "1");
+        assert_eq!(buffer[(rect.x + 1, rect.y)].symbol(), ":");
+        assert_eq!(buffer[(rect.x + 3, rect.y)].symbol(), "提");
+        assert_eq!(buffer[(rect.x + 5, rect.y)].symbol(), "交");
+        assert_eq!(buffer[(rect.x + 11, rect.y)].symbol(), "…");
+        assert_eq!(buffer[(rect.x + 13, rect.y)].symbol(), "Z");
+        assert_eq!(
+            app.workspaces[0].tab_display_name(0).as_deref(),
+            Some("提交 herdr 的反馈")
+        );
+    }
+
+    #[test]
+    fn numbered_tab_overflow_centers_multidigit_active_tab_and_keeps_controls() {
+        let mut app = AppState::test_new();
+        app.show_tab_numbers = true;
+        app.mouse_capture = true;
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("tab-1".into());
+        for idx in 2..=12 {
+            ws.test_add_tab(Some(&format!("tab-{idx}")));
+        }
+        ws.switch_tab(10);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let buffer = render_tab_row(&mut app, 30, true);
+        let row = buffer_row_text(&buffer, app.view.tab_bar_rect, 0);
+
+        assert!(app.tab_scroll > 0);
+        assert!(row.contains("11: tab-11"), "tab row: {row:?}");
+        assert!(row.contains('<'), "tab row: {row:?}");
+        assert!(row.contains('>'), "tab row: {row:?}");
+        assert!(app.view.new_tab_hit_area.width > 0);
+        assert!(app.view.tab_scroll_left_hit_area.width > 0);
+        assert!(app.view.tab_scroll_right_hit_area.width > 0);
+
+        let narrow_buffer = render_tab_row(&mut app, MIN_TAB_STRIP_WIDTH, true);
+        let first_visible = app
+            .view
+            .tab_hit_areas
+            .iter()
+            .find(|rect| rect.width > 0)
+            .copied()
+            .unwrap();
+        let overflow_x =
+            app.view.tab_scroll_left_hit_area.x + app.view.tab_scroll_left_hit_area.width;
+        assert_eq!(narrow_buffer[(overflow_x, 0)].symbol(), "…");
+        assert_eq!(first_visible.x, overflow_x + 1);
+        assert_eq!(narrow_buffer[(first_visible.x, 0)].symbol(), "1");
+        assert_eq!(narrow_buffer[(first_visible.x + 1, 0)].symbol(), "1");
+        assert_eq!(narrow_buffer[(first_visible.x + 2, 0)].symbol(), ":");
+    }
+
     #[test]
     fn tab_bar_marks_zoomed_tabs_without_renaming_them() {
         let mut app = AppState::test_new();
@@ -527,7 +855,14 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view = compute_tab_bar_view(
+            &app.workspaces[0],
+            app.view.tab_bar_rect,
+            0,
+            true,
+            false,
+            false,
+        );
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
@@ -562,7 +897,7 @@ mod tests {
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 60, 1);
         let content = tab_bar_content_area(&app, app.view.tab_bar_rect);
-        let view = compute_tab_bar_view(&app.workspaces[0], content, 0, true, false);
+        let view = compute_tab_bar_view(&app.workspaces[0], content, 0, true, false, false);
         app.view.tab_hit_areas = view.tab_hit_areas.clone();
 
         let backend = TestBackend::new(60, 1);
@@ -597,7 +932,7 @@ mod tests {
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 40, 1);
         let content = tab_bar_content_area(&app, app.view.tab_bar_rect);
-        let view = compute_tab_bar_view(&app.workspaces[0], content, 0, true, false);
+        let view = compute_tab_bar_view(&app.workspaces[0], content, 0, true, false, false);
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(40, 1);
@@ -629,7 +964,7 @@ mod tests {
         let wide_enough = Rect::new(0, 0, MIN_TAB_STRIP_WIDTH + 2, 1);
         let content = tab_bar_content_area(&app, wide_enough);
         assert_eq!(content.width, MIN_TAB_STRIP_WIDTH);
-        let view = compute_tab_bar_view(&app.workspaces[0], content, 0, true, true);
+        let view = compute_tab_bar_view(&app.workspaces[0], content, 0, true, true, false);
         assert!(view.tab_hit_areas[0].width >= MIN_TAB_WIDTH);
     }
 
@@ -658,6 +993,7 @@ mod tests {
             0,
             true,
             true,
+            false,
         );
         assert!(view.tab_hit_areas[0].width > 0);
         assert!(view.new_tab_hit_area.width > 0);
@@ -672,7 +1008,14 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view = compute_tab_bar_view(
+            &app.workspaces[0],
+            app.view.tab_bar_rect,
+            0,
+            true,
+            false,
+            false,
+        );
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
@@ -702,7 +1045,14 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view = compute_tab_bar_view(
+            &app.workspaces[0],
+            app.view.tab_bar_rect,
+            0,
+            true,
+            false,
+            false,
+        );
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
@@ -727,7 +1077,14 @@ mod tests {
         app.workspaces = vec![ws];
         app.active = Some(0);
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view = compute_tab_bar_view(
+            &app.workspaces[0],
+            app.view.tab_bar_rect,
+            0,
+            true,
+            false,
+            false,
+        );
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
@@ -750,7 +1107,7 @@ mod tests {
         ws.tabs[0].set_custom_name("abcdefgh".into());
         ws.tabs[0].zoomed = true;
 
-        assert_eq!(tab_width(&ws, 0), 14);
+        assert_eq!(tab_width(&ws, 0, false), 14);
     }
 
     #[test]
@@ -759,7 +1116,7 @@ mod tests {
         ws.tabs[0].set_custom_name("提交 herdr 的反馈".into());
 
         assert_eq!(
-            tab_width(&ws, 0),
+            tab_width(&ws, 0, false),
             display_width_u16("提交 herdr 的反馈") + 4
         );
     }
@@ -773,7 +1130,14 @@ mod tests {
         app.active = Some(0);
         app.workspaces = vec![ws];
         app.view.tab_bar_rect = Rect::new(0, 0, 30, 1);
-        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        let view = compute_tab_bar_view(
+            &app.workspaces[0],
+            app.view.tab_bar_rect,
+            0,
+            true,
+            false,
+            false,
+        );
         app.view.tab_hit_areas = view.tab_hit_areas;
 
         let backend = TestBackend::new(30, 1);
