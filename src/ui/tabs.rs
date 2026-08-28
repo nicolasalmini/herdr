@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use super::text::display_width_u16;
+use super::text::{display_width_u16, truncate_end};
 use super::widgets::panel_contrast_fg;
 use crate::app::AppState;
 
@@ -37,6 +37,19 @@ fn tab_number_marker_width(tab_idx: usize) -> u16 {
     width.saturating_add(1)
 }
 
+fn numbered_tab_fixed_chrome_width(
+    ws: &crate::workspace::Workspace,
+    tab_idx: usize,
+) -> u16 {
+    tab_number_marker_width(tab_idx).saturating_add(
+        ws.tabs
+            .get(tab_idx)
+            .is_some_and(|tab| tab.zoomed)
+            .then_some(display_width_u16(" Z"))
+            .unwrap_or_default(),
+    )
+}
+
 fn tab_width(ws: &crate::workspace::Workspace, tab_idx: usize, show_tab_numbers: bool) -> u16 {
     display_width_u16(&tab_chrome_label(ws, tab_idx, show_tab_numbers))
         .saturating_add(4)
@@ -60,6 +73,31 @@ fn tab_chrome_label(
         format!("{name} Z")
     } else {
         name
+    }
+}
+
+fn fitted_numbered_tab_chrome_label(
+    ws: &crate::workspace::Workspace,
+    tab_idx: usize,
+    max_width: u16,
+) -> String {
+    let marker = format!("{}:", tab_idx + 1);
+    let zoom_suffix = if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
+        " Z"
+    } else {
+        ""
+    };
+    let label_budget = max_width
+        .saturating_sub(numbered_tab_fixed_chrome_width(ws, tab_idx))
+        .saturating_sub(1);
+    let label = ws
+        .tab_display_name(tab_idx)
+        .unwrap_or_else(|| (tab_idx + 1).to_string());
+    let label = truncate_end(&label, usize::from(label_budget));
+    if label.is_empty() {
+        format!("{marker}{zoom_suffix}")
+    } else {
+        format!("{marker} {label}{zoom_suffix}")
     }
 }
 
@@ -148,7 +186,9 @@ fn layout_tab_hit_areas(
         let remaining = right.saturating_sub(x);
         if show_tab_numbers {
             let overflow_cell = u16::from(idx + 1 < ws.tabs.len());
-            if remaining < tab_number_marker_width(idx).saturating_add(overflow_cell) {
+            if remaining
+                < numbered_tab_fixed_chrome_width(ws, idx).saturating_add(overflow_cell)
+            {
                 break;
             }
         }
@@ -475,7 +515,11 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(p.overlay1).bg(p.surface0)
         };
         let width = rect.width as usize;
-        let name = tab_chrome_label(ws, idx, app.show_tab_numbers);
+        let name = if app.show_tab_numbers {
+            fitted_numbered_tab_chrome_label(ws, idx, rect.width)
+        } else {
+            tab_chrome_label(ws, idx, false)
+        };
         // Pad by terminal columns, not chars, so wide glyphs stay centered.
         let padding = width.saturating_sub(display_width_u16(&name) as usize);
         let left = padding / 2;
@@ -736,6 +780,32 @@ mod tests {
         assert_eq!(overflow_buffer[(1, 0)].symbol(), ":");
         assert_eq!(overflow_buffer[(2, 0)].symbol(), "…");
         assert_eq!(app.view.tab_hit_areas[1], Rect::default());
+    }
+
+    #[test]
+    fn numbered_zoomed_tab_truncates_only_unicode_label() {
+        let mut app = AppState::test_new();
+        app.show_tab_numbers = true;
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("提交 herdr 的反馈".into());
+        ws.tabs[0].zoomed = true;
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let buffer = render_tab_row(&mut app, 14, false);
+        let rect = app.view.tab_hit_areas[0];
+
+        assert_eq!(rect.width, 14);
+        assert_eq!(buffer[(rect.x, rect.y)].symbol(), "1");
+        assert_eq!(buffer[(rect.x + 1, rect.y)].symbol(), ":");
+        assert_eq!(buffer[(rect.x + 3, rect.y)].symbol(), "提");
+        assert_eq!(buffer[(rect.x + 5, rect.y)].symbol(), "交");
+        assert_eq!(buffer[(rect.x + 11, rect.y)].symbol(), "…");
+        assert_eq!(buffer[(rect.x + 13, rect.y)].symbol(), "Z");
+        assert_eq!(
+            app.workspaces[0].tab_display_name(0).as_deref(),
+            Some("提交 herdr 的反馈")
+        );
     }
 
     #[test]
