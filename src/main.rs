@@ -348,7 +348,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # New tabs can still be created with the configured keybinding.
 # hide_tab_bar_when_single_tab = false
 
-# Show one-based current-order numbers before desktop tab labels.
+# Show auto-named tabs by their one-based current-order number and prefix custom labels with it.
 # Numbers follow tab moves and closes without changing stored labels.
 # show_tab_numbers = false
 
