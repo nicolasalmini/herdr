@@ -37,10 +37,7 @@ fn tab_number_marker_width(tab_idx: usize) -> u16 {
     width.saturating_add(1)
 }
 
-fn numbered_tab_fixed_chrome_width(
-    ws: &crate::workspace::Workspace,
-    tab_idx: usize,
-) -> u16 {
+fn numbered_tab_fixed_chrome_width(ws: &crate::workspace::Workspace, tab_idx: usize) -> u16 {
     tab_number_marker_width(tab_idx).saturating_add(
         ws.tabs
             .get(tab_idx)
@@ -186,9 +183,7 @@ fn layout_tab_hit_areas(
         let remaining = right.saturating_sub(x);
         if show_tab_numbers {
             let overflow_cell = u16::from(idx + 1 < ws.tabs.len());
-            if remaining
-                < numbered_tab_fixed_chrome_width(ws, idx).saturating_add(overflow_cell)
-            {
+            if remaining < numbered_tab_fixed_chrome_width(ws, idx).saturating_add(overflow_cell) {
                 break;
             }
         }
@@ -768,7 +763,7 @@ mod tests {
         assert_eq!(buffer[(rect.x, rect.y)].symbol(), "1");
         assert_eq!(buffer[(rect.x + 1, rect.y)].symbol(), ":");
         assert_eq!(buffer[(rect.x + 3, rect.y)].symbol(), "提");
-        assert_eq!(buffer[(rect.x + 5, rect.y)].symbol(), "交");
+        assert_eq!(buffer[(rect.x + 5, rect.y)].symbol(), "…");
         assert_eq!(
             app.workspaces[0].tab_display_name(0).as_deref(),
             Some("提交 herdr 的反馈")
