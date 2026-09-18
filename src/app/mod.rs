@@ -4178,13 +4178,17 @@ mod tests {
     }
 
     #[test]
-    fn tab_info_number_uses_stable_public_tab_number() {
+    fn tab_numbers_do_not_change_api_labels_or_stable_public_numbers() {
         let mut app = test_app();
+        app.state.show_tab_numbers = true;
         let mut workspace = Workspace::test_new("api-tab-public-number");
         let removed_tab = workspace.test_add_tab(None);
         let survivor_tab = workspace.test_add_tab(None);
+        let custom_tab = workspace.test_add_tab(Some("logs"));
         let survivor_pane = workspace.tabs[survivor_tab].root_pane;
+        let custom_pane = workspace.tabs[custom_tab].root_pane;
         assert!(workspace.close_tab(removed_tab));
+        assert!(workspace.move_tab(2, 0));
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.active = Some(0);
@@ -4192,12 +4196,29 @@ mod tests {
         let survivor_idx = app.state.workspaces[0]
             .find_tab_index_for_pane(survivor_pane)
             .unwrap();
+        let custom_idx = app.state.workspaces[0]
+            .find_tab_index_for_pane(custom_pane)
+            .unwrap();
 
-        let tab = app.tab_info(0, survivor_idx).unwrap();
+        let survivor = app.tab_info(0, survivor_idx).unwrap();
+        let custom = app.tab_info(0, custom_idx).unwrap();
 
-        assert_eq!(tab.tab_id, format!("{}:t3", app.state.workspaces[0].id));
-        assert_eq!(tab.number, 3);
-        assert_eq!(tab.label, "2");
+        assert_eq!(
+            survivor.tab_id,
+            format!("{}:t3", app.state.workspaces[0].id)
+        );
+        assert_eq!(survivor.number, 3);
+        assert_eq!(survivor.label, "3");
+        assert_eq!(custom.tab_id, format!("{}:t4", app.state.workspaces[0].id));
+        assert_eq!(custom.number, 4);
+        assert_eq!(custom.label, "logs");
+        assert_eq!(app.state.workspaces[0].tabs[survivor_idx].custom_name, None);
+        assert_eq!(
+            app.state.workspaces[0].tabs[custom_idx]
+                .custom_name
+                .as_deref(),
+            Some("logs")
+        );
     }
 
     #[test]

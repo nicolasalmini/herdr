@@ -27,23 +27,33 @@ pub(crate) struct TabBarView {
     pub new_tab_hit_area: Rect,
 }
 
-fn tab_number_marker_width(tab_idx: usize) -> u16 {
+fn tab_number_width(tab_idx: usize) -> u16 {
     let mut number = tab_idx.saturating_add(1);
     let mut width = 1_u16;
     while number >= 10 {
         number /= 10;
         width = width.saturating_add(1);
     }
-    width.saturating_add(1)
+    width
 }
 
 fn numbered_tab_fixed_chrome_width(ws: &crate::workspace::Workspace, tab_idx: usize) -> u16 {
-    let zoom_indicator_width = if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
+    let Some(tab) = ws.tabs.get(tab_idx) else {
+        return tab_number_width(tab_idx);
+    };
+    let custom_label_separator_width = if tab.is_auto_named() {
+        0
+    } else {
+        display_width_u16(":")
+    };
+    let zoom_indicator_width = if tab.zoomed {
         display_width_u16(" Z")
     } else {
         0
     };
-    tab_number_marker_width(tab_idx).saturating_add(zoom_indicator_width)
+    tab_number_width(tab_idx)
+        .saturating_add(custom_label_separator_width)
+        .saturating_add(zoom_indicator_width)
 }
 
 fn tab_width(ws: &crate::workspace::Workspace, tab_idx: usize, show_tab_numbers: bool) -> u16 {
@@ -57,10 +67,11 @@ fn tab_chrome_label(
     tab_idx: usize,
     show_tab_numbers: bool,
 ) -> String {
+    let tab = ws.tabs.get(tab_idx);
     let name = ws
         .tab_display_name(tab_idx)
         .unwrap_or_else(|| (tab_idx + 1).to_string());
-    let name = if show_tab_numbers {
+    let name = if show_tab_numbers && tab.is_some_and(|tab| !tab.is_auto_named()) {
         format!("{}: {name}", tab_idx + 1)
     } else {
         name
@@ -77,18 +88,24 @@ fn fitted_numbered_tab_chrome_label(
     tab_idx: usize,
     max_width: u16,
 ) -> String {
-    let marker = format!("{}:", tab_idx + 1);
-    let zoom_suffix = if ws.tabs.get(tab_idx).is_some_and(|tab| tab.zoomed) {
+    let number = tab_idx + 1;
+    let tab = ws.tabs.get(tab_idx);
+    let zoom_suffix = if tab.is_some_and(|tab| tab.zoomed) {
         " Z"
     } else {
         ""
     };
+    if tab.is_some_and(|tab| tab.is_auto_named()) {
+        return format!("{number}{zoom_suffix}");
+    }
+
+    let marker = format!("{number}:");
     let label_budget = max_width
         .saturating_sub(numbered_tab_fixed_chrome_width(ws, tab_idx))
         .saturating_sub(1);
     let label = ws
         .tab_display_name(tab_idx)
-        .unwrap_or_else(|| (tab_idx + 1).to_string());
+        .unwrap_or_else(|| number.to_string());
     let label = truncate_end(&label, usize::from(label_budget));
     if label.is_empty() {
         format!("{marker}{zoom_suffix}")
@@ -673,6 +690,60 @@ mod tests {
     }
 
     #[test]
+    fn tab_numbers_render_auto_once_and_custom_with_prefix_at_wide_and_narrow_widths() {
+        let mut app = AppState::test_new();
+        app.show_tab_numbers = true;
+        let mut ws = Workspace::test_new("test");
+        let custom_tab = ws.test_add_tab(Some("shell"));
+        let stored_numbers = [ws.tabs[0].number, ws.tabs[custom_tab].number];
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let wide_buffer = render_tab_row(&mut app, 30, false);
+        let auto_rect = app.view.tab_hit_areas[0];
+        let custom_rect = app.view.tab_hit_areas[custom_tab];
+        assert_eq!(tab_cell_text(&wide_buffer, auto_rect).trim(), "1");
+        assert!(tab_cell_text(&wide_buffer, custom_rect).contains("2: shell"));
+
+        let narrow_buffer = render_tab_row(&mut app, 3, false);
+        let auto_rect = app.view.tab_hit_areas[0];
+        assert_eq!(narrow_buffer[(auto_rect.x + 1, auto_rect.y)].symbol(), "1");
+        assert_ne!(narrow_buffer[(auto_rect.x + 2, auto_rect.y)].symbol(), ":");
+        assert_eq!(
+            fitted_numbered_tab_chrome_label(&app.workspaces[0], 0, 1),
+            "1"
+        );
+        assert_eq!(
+            fitted_numbered_tab_chrome_label(&app.workspaces[0], custom_tab, 5),
+            "2: s…"
+        );
+        app.workspaces[0].tabs[0].zoomed = true;
+        assert_eq!(
+            fitted_numbered_tab_chrome_label(&app.workspaces[0], 0, 3),
+            "1 Z"
+        );
+        app.workspaces[0].tabs[0].zoomed = false;
+
+        assert_eq!(app.workspaces[0].tabs[0].custom_name, None);
+        assert_eq!(
+            app.workspaces[0].tabs[custom_tab].custom_name.as_deref(),
+            Some("shell")
+        );
+        assert_eq!(
+            [
+                app.workspaces[0].tabs[0].number,
+                app.workspaces[0].tabs[custom_tab].number,
+            ],
+            stored_numbers
+        );
+        assert_eq!(app.workspaces[0].tab_display_name(0).as_deref(), Some("1"));
+        assert_eq!(
+            app.workspaces[0].tab_display_name(custom_tab).as_deref(),
+            Some("shell")
+        );
+    }
+
+    #[test]
     fn tab_numbers_render_current_order_through_ten_with_existing_styles() {
         let mut app = AppState::test_new();
         app.show_tab_numbers = true;
@@ -715,35 +786,44 @@ mod tests {
     }
 
     #[test]
-    fn tab_numbers_follow_close_move_and_indexed_switch_without_renaming() {
+    fn tab_numbers_follow_create_close_reorder_and_indexed_switch_without_renaming() {
         let mut app = AppState::test_new();
         app.show_tab_numbers = true;
         let mut ws = Workspace::test_new("test");
-        ws.tabs[0].set_custom_name("alpha".into());
-        ws.test_add_tab(Some("beta"));
-        ws.test_add_tab(Some("gamma"));
+        for _ in 2..=12 {
+            ws.test_add_tab(None);
+        }
+        ws.tabs[5].set_custom_name("logs".into());
 
-        assert!(ws.move_tab(2, 0));
+        assert!(ws.move_tab(11, 0));
+        assert_eq!(ws.tabs[0].number, 12);
         assert!(ws.close_tab(1));
-        ws.switch_tab(1);
+        ws.switch_tab(9);
         app.workspaces = vec![ws];
         app.active = Some(0);
 
-        let buffer = render_tab_row(&mut app, 40, false);
-        let first = app.view.tab_hit_areas[0];
-        let second = app.view.tab_hit_areas[1];
-
-        assert!(tab_cell_text(&buffer, first).contains("1: gamma"));
-        assert!(tab_cell_text(&buffer, second).contains("2: beta"));
-        assert_eq!(app.workspaces[0].active_tab_index(), 1);
+        let buffer = render_tab_row(&mut app, 150, false);
+        for (idx, tab) in app.workspaces[0].tabs.iter().enumerate() {
+            let text = tab_cell_text(&buffer, app.view.tab_hit_areas[idx]);
+            if tab.is_auto_named() {
+                assert_eq!(text.trim(), (idx + 1).to_string(), "tab {idx}: {text:?}");
+            }
+        }
+        assert!(tab_cell_text(&buffer, app.view.tab_hit_areas[5]).contains("6: logs"));
+        assert_eq!(app.workspaces[0].active_tab_index(), 9);
+        assert_eq!(app.workspaces[0].tabs[9].number, 10);
+        assert_eq!(app.workspaces[0].tabs[0].number, 12);
+        assert_eq!(app.workspaces[0].tabs[0].custom_name, None);
         assert_eq!(
-            app.workspaces[0].tab_display_name(0).as_deref(),
-            Some("gamma")
+            app.workspaces[0].tabs[5].custom_name.as_deref(),
+            Some("logs")
         );
+        assert_eq!(app.workspaces[0].tab_display_name(0).as_deref(), Some("1"));
         assert_eq!(
-            app.workspaces[0].tab_display_name(1).as_deref(),
-            Some("beta")
+            app.workspaces[0].tab_display_name(5).as_deref(),
+            Some("logs")
         );
+        assert_eq!(app.workspaces[0].tab_display_name(9).as_deref(), Some("10"));
     }
 
     #[test]

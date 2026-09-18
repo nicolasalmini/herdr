@@ -986,7 +986,7 @@
           "key": "ui.show_tab_numbers",
           "type": "boolean",
           "default": "false",
-          "description": "Show one-based current-order numbers before desktop tab labels without changing stored labels."
+          "description": "Show auto-named tabs by their one-based current-order number and prefix custom labels with it, without changing stored labels."
         },
         {
           "key": "ui.tab_bar_position",

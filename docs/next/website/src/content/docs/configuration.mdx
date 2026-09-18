@@ -300,7 +300,7 @@ The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](
 
 Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.
 
-Set `show_tab_numbers = true` under `[ui]` to prefix each desktop tab label with its one-based current-order index, such as `1: shell` or `10: editor`. The numbers follow the same visual order used by indexed `switch_tab` bindings. They update after tabs are created, closed, or moved without changing stored labels, API labels, or session data. The default is `false`.
+Set `show_tab_numbers = true` under `[ui]` to show each automatically named desktop tab as its one-based current-order index, such as `1` or `10`, and to prefix custom labels, such as `2: shell`. The numbers follow the same visual order used by indexed `switch_tab` bindings. They update after tabs are created, closed, or moved without changing stored labels, API labels, or session data. The default is `false`.
 
 Configure an ordered tmux-style status area at the right edge of the tab row:
 
